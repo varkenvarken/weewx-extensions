@@ -16,7 +16,7 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 #  
-#  version 202103041037
+#  version 202103051410
 
 """Generate polar plots for various weewx data with a directional component"""
 
@@ -58,7 +58,7 @@ class PolarPlotLine:
     """Represents a single line (or bar) in a plot. """
     def __init__(self, x, y, label='', color=None, fill_color=None, width=None, plot_type='line',
                  line_type='solid', marker_type=None, marker_size=10, 
-                 bar_width=None, vector_rotate = None, gap_fraction=None, theta_bins=0):
+                 bar_width=None, vector_rotate = None, gap_fraction=None, theta_bins=0, r_bins=0):
         self.x               = x
         self.y               = y
         self.label           = label
@@ -73,11 +73,23 @@ class PolarPlotLine:
         self.vector_rotate   = vector_rotate
         self.gap_fraction    = gap_fraction
         self.theta_bins      = theta_bins
+        self.r_bins          = r_bins
     
     def __str__(self):
         return str(self.x) + str(self.y)
         
 class PolarPlot(weeplot.genplot.GeneralPlot):
+    
+    """
+    line:                   time v. direction, e.g. windDir, individual points
+    vector_dir:             time v. direction, e.g. windvec, individual points
+    histogram:              time v. direction, e.g. windDir, grouped into bins, counted
+    histogram_vector_dir:   time v. direction, e.g. windvec, grouped into bins, counted
+    histogram_vector_size:  size v. direction, e.g. windvec, grouped into bins, counted (Note: time is ignored here!)
+    """
+
+    plot_types = ('line', 'vector_dir', 'histogram', 'histogram_vector_size', 'histogram_vector_dir')
+    
 
     def _renderDayNight(self, tmin, tmax, ax):
         # get day/night transitions
@@ -107,17 +119,36 @@ class PolarPlot(weeplot.genplot.GeneralPlot):
     def render(self):
         print('PolarPlot render')
         
-        # x are timestamps
-        # y are angles (in degrees)
-        tmin = np.min(self.line_list[0].x)  # this might be in the Xscale info already ...
-        tmax = np.max(self.line_list[0].x)
-        print(self.image_background_color, self.chart_background_color)
-        #print(self.bottom_label_font_path, self.bottom_label_font_size)
-        #print(type(self.line_list[0].x[0]),type(self.line_list[0].y[0]))
+        if len(self.line_list) != 1:
+            log.error("Number of lines in polar plot should be 1")
+            return
+        
+        line = self.line_list[0]
+        if line.plot_type not in PolarPlot.plot_types:
+            log.error(f"plot type {line.plot_type} not supported in polar plot")
+            return
+
+        # convert data to ndarrays and strip nans
+        t = np.array(line.x)
+        nant = np.isnan(t)
+        if type(line.y[0]) == complex:
+            y = np.array(line.y, dtype=np.complex64)
+            nany = np.abs(y) <= 0.0
+        else:
+            y = np.array(line.y, dtype=np.float32)
+            nany = np.isnan(y)
+        nandata = np.logical_or(nant, nany)
+        t = t[nandata == False]
+        y = y[nandata == False]
+        print(len(t),len(y))
+        tmin = np.min(t)  # this might be in the Xscale info already ...
+        tmax = np.max(t)
+        
         self.fig = plt.figure(facecolor=int2rgbstr(self.chart_background_color))
         self.ax = self.fig.add_subplot(111, projection='polar', facecolor=int2rgbstr(self.image_background_color))
         self.ax.set_xlabel(self.bottom_label, fontproperties=Path(self.bottom_label_font_path) if self.bottom_label_font_path else None)
-        self.ax.set_rticks([0.0, 0.25, 0.5, 0.75])
+        self.ax.set_rticks([0.0, 0.25, 0.5, 0.75])  # TODO make ticks dependent on xscale and/or optional
+        
         # just setting fixed labels results in a user warning to we explicitly set a fixed locator first
         ticks_loc = self.ax.get_xticks().tolist()
         self.ax.xaxis.set_major_locator(mticker.FixedLocator(ticks_loc))
@@ -125,39 +156,76 @@ class PolarPlot(weeplot.genplot.GeneralPlot):
         # make an annulus (gap near the center)
         self.ax.set_rorigin(-0.25)
         self.ax.set_theta_zero_location('N')
-        self.ax.set_theta_direction(-1)
-        print('theta_bins', self.line_list[0].theta_bins)
-        if self.line_list[0].plot_type == 'vector':
-            t = np.array(self.line_list[0].x, dtype=np.float32)
-            v = np.conj(np.array(self.line_list[0].y, dtype=np.complex64))
-            θ = np.angle(v) + np.pi/2
-            a = np.abs(self.line_list[0].y)
-            r = (t - tmin)/(tmax-tmin)
-            c = self.ax.scatter(θ, 1 - r, c=a, cmap=blue2red, vmax=12)  # more recent is closer to the center
-        else:
+        self.ax.set_theta_direction(-1)  
+
+        if line.plot_type == 'vector_dir':  # time v direction part of vector
             if self.show_daynight:
                 self._renderDayNight(tmin, tmax, self.ax)
-            t = np.array(self.line_list[0].x, dtype=np.float32)
-            direction = np.array(self.line_list[0].y, dtype=np.float32)
+
+            v = np.conj(y)
+            θ = (np.angle(v) + np.pi/2) % (2*np.pi)  # angle is calculated counter clockwise from x axis (East) so we add 90 to rotate
+            # TODO now color is always linked to size; make this configurable
+            a = np.abs(y)
             r = (t - tmin)/(tmax-tmin)
-            θ = np.radians(direction)
-            theta_bins = int(self.line_list[0].theta_bins)
-            if  theta_bins > 0:
-                half_bin_width = np.pi / theta_bins 
-                tbins = np.linspace(0,2*np.pi,theta_bins+1)
-                rbins = np.linspace(0,1,8)  # nbins hardcoded for now
-                H, θedges, redges = np.histogram2d(θ + half_bin_width % 2*np.pi, r, bins=[tbins, rbins])
-                H = np.append(H,H[0].reshape(1,-1), axis=0)
-                tbins -= half_bin_width
-                offset = 0
-                print(H)
-                for rbin in range(len(rbins)-1):
-                    counts = H[:,rbin] + offset
-                    offset += counts
-                    print(tbins.shape, counts.shape)
-                    patch = self.ax.plot(tbins,counts)
-            else:
-                c = self.ax.scatter(θ, 1-r)   # more recent is closer to the center
+            c = self.ax.scatter(θ, 1 - r, c=a, cmap=blue2red, vmax=12)  # more recent is closer to the center
+        elif line.plot_type == 'histogram':  # histogram of direction (t is basically ignored , i.e. r_bins=1
+            if self.show_daynight:
+                self._renderDayNight(tmin, tmax, self.ax)
+            
+            direction = y
+            r = (t - tmin)/(tmax-tmin)
+            θ = (np.radians(direction)) % (2*np.pi)
+
+            theta_bins = int(line.theta_bins)
+            r_bins = int(line.r_bins)
+            if  theta_bins <= 0:
+                theta_bins = 8
+            if  r_bins <= 0:
+                r_bins = 1
+            print(theta_bins, r_bins)
+            half_bin_width = 2 * np.pi / theta_bins 
+            tbins = np.linspace(0,2*np.pi,theta_bins+1)
+            rbins = np.linspace(0,1,r_bins+1)
+            H, θedges, redges = np.histogram2d((θ + half_bin_width) % (2*np.pi), 1 - r, bins=[tbins, rbins])
+            H = np.append(H,H[0].reshape(1,-1), axis=0)
+            tbins -= half_bin_width
+            offset = 0
+            # currently we only create a contour line, not a filled contour
+            for rbin in range(len(rbins)-1):
+                counts = H[:,rbin] + offset
+                offset += counts
+                self.ax.plot(tbins,counts)  # this returns a patch that could be used ofr other stuff as well
+                
+        elif line.plot_type == 'histogram_vector_dir':  # histogram of the size of vector quantity
+            if self.show_daynight:
+                self._renderDayNight(tmin, tmax, self.ax)
+            
+            v = np.conj(y)
+            θ = (np.angle(v) + np.pi/2 ) % (2*np.pi)  # angle is calculated counter clockwise from x axis (East) so we add 90 to rotate
+            
+            r = np.abs(y)
+
+            theta_bins = int(line.theta_bins)
+            r_bins = int(line.r_bins)
+            if  theta_bins <= 0:
+                theta_bins = 8
+            if  r_bins <= 0:
+                r_bins = 8
+            print(theta_bins, r_bins)
+            half_bin_width = 2 * np.pi / theta_bins 
+            tbins = np.linspace(0,2*np.pi,theta_bins+1)
+            rbins = np.linspace(0,np.max(r),r_bins+1)
+            H, θedges, redges = np.histogram2d((θ + half_bin_width) % (2*np.pi), r, bins=[tbins, rbins])
+            H = np.append(H,H[0].reshape(1,-1), axis=0)
+            tbins -= half_bin_width
+            offset = 0
+            # currently we only create a contour line, not a filled contour
+            for rbin in range(len(rbins)-1):
+                counts = H[:,rbin] + offset
+                offset += counts
+                self.ax.plot(tbins,counts)  # this returns a patch that could be used for other stuff as well
+        else:
+            raise NotImplementedError(f"not yet supported plot type {line.plot_type}")
         self.ax.grid(True)  # needs to come after call pcolormesh (because that fie sets it to False)
         return self.fig
 
@@ -381,7 +449,9 @@ class PolarPlotGenerator(weewx.reportengine.ReportGenerator):
                     marker_type = line_options.get('marker_type')
                     marker_size = to_int(line_options.get('marker_size', 8))
                     
-                    theta_bins = plot_options.get('theta_bins',0)
+                    print(line_options)
+                    theta_bins = line_options.get('theta_bins',0)
+                    r_bins = line_options.get('r_bins',0)
                     # Add the line to the emerging plot:
                     plot.addLine(PolarPlotLine(
                         new_stop_vec_t[0], new_data_vec_t[0],
@@ -396,7 +466,8 @@ class PolarPlotGenerator(weewx.reportengine.ReportGenerator):
                         bar_width     = interval_vec,
                         vector_rotate = vector_rotate,
                         gap_fraction  = gap_fraction,
-                        theta_bins    = theta_bins))
+                        theta_bins    = theta_bins,
+                        r_bins    = r_bins))
 
                 # OK, the plot is ready. Render it onto an image
                 image = plot.render()
