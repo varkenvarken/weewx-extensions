@@ -1,4 +1,4 @@
-Some weewx extensions, very much a work in progress
+Some weewx extensions, very much a work in progress.
 
 sunmoon.py:
 
