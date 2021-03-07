@@ -196,7 +196,7 @@ class PolarPlot(weeplot.genplot.GeneralPlot):
                 offset += counts
                 self.ax.plot(tbins,counts)  # this returns a patch that could be used ofr other stuff as well
                 
-        elif line.plot_type == 'histogram_vector_dir':  # histogram of the size of vector quantity
+        elif line.plot_type == 'old_histogram_vector_dir':  # histogram of the size of vector quantity
             if self.show_daynight:
                 self._renderDayNight(tmin, tmax, self.ax)
             
@@ -217,13 +217,36 @@ class PolarPlot(weeplot.genplot.GeneralPlot):
             rbins = np.linspace(0,np.max(r),r_bins+1)
             H, θedges, redges = np.histogram2d((θ + half_bin_width) % (2*np.pi), r, bins=[tbins, rbins])
             H = np.append(H,H[0].reshape(1,-1), axis=0)
-            tbins -= half_bin_width
-            offset = 0
+            print(tbins)
+            C = np.cumsum(np.hstack((np.zeros(len(H)).reshape(-1,1),H)), axis=1).T
+            print(C)
             # currently we only create a contour line, not a filled contour
             for rbin in range(len(rbins)-1):
-                counts = H[:,rbin] + offset
-                offset += counts
-                self.ax.plot(tbins,counts)  # this returns a patch that could be used for other stuff as well
+                #self.ax.plot(tbins,counts)
+                self.ax.fill_between(tbins,C[rbin],C[rbin+1],cmap=blue2red)
+
+        elif line.plot_type == 'histogram_vector_dir':  # histogram of the size of vector quantity
+            
+            v = np.conj(y)
+            θ = (np.angle(v) + np.pi/2 ) % (2*np.pi)  # angle is calculated counter clockwise from x axis (East) so we add 90 to rotate
+            r = np.abs(y)
+
+            theta_bins = int(line.theta_bins)
+            r_bins = int(line.r_bins)
+            if  theta_bins <= 0:
+                theta_bins = 8
+            if  r_bins <= 0:
+                r_bins = 8
+            print(theta_bins, r_bins)
+            half_bin_width = 2 * np.pi / theta_bins 
+            tbins = np.linspace(0,2*np.pi,theta_bins+1)
+            rbins = np.linspace(0,np.max(r),r_bins+1)
+            H, θedges, redges = np.histogram2d((θ + half_bin_width) % (2*np.pi), r, bins=[tbins, rbins])
+            H = np.append(H,H[0].reshape(1,-1), axis=0)
+            C = np.cumsum(np.hstack((np.zeros(len(H)).reshape(-1,1),H)), axis=1)
+            T,R = np.meshgrid(tbins - half_bin_width/2, rbins)
+            print(T, np.degrees(half_bin_width))
+            self.ax.pcolormesh(T, R, C.T)
         else:
             raise NotImplementedError(f"not yet supported plot type {line.plot_type}")
         self.ax.grid(True)  # needs to come after call pcolormesh (because that fie sets it to False)
